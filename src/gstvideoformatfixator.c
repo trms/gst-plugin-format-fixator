@@ -79,7 +79,6 @@ struct _GstVideoFormatFixator
   GstElement *capsfilter_rear;
   GstElement *convert_front;
   GstElement *convert_rear;
-  GstElement *videorate;
 
   ProcSlot *current_slot;
 
@@ -150,14 +149,11 @@ gst_video_format_fixator_init (GstVideoFormatFixator * self)
   MAKE_ELEMENT_AND_ADD (self, self->capsfilter_rear, "capsfilter");
   MAKE_ELEMENT_AND_ADD (self, self->convert_front, "videoconvert");
   MAKE_ELEMENT_AND_ADD (self, self->convert_rear, "videoconvert");
-  MAKE_ELEMENT_AND_ADD (self, self->videorate, "videorate");
 
   self->current_slot = gst_video_format_fixator_slot_new (self,
       MODE_PASSTHROUGH);
 
   gst_bin_add (GST_BIN_CAST (self), self->current_slot->bin);
-
-  g_object_set (self->videorate, "skip-to-first", TRUE, NULL);
 
   /* FIXME: support hardware memory */
   caps = gst_caps_from_string ("video/x-raw");
@@ -167,7 +163,7 @@ gst_video_format_fixator_init (GstVideoFormatFixator * self)
 
   gst_element_link_many (self->capsfilter_front,
       self->convert_front, self->current_slot->bin,
-      self->convert_rear, self->videorate, self->capsfilter_rear, NULL);
+      self->convert_rear, self->capsfilter_rear, NULL);
 
   pad = gst_element_get_static_pad (self->capsfilter_front, "sink");
   self->sinkpad = gst_ghost_pad_new ("sink", pad);
@@ -426,61 +422,12 @@ gst_video_format_fixator_slot_new (GstVideoFormatFixator * self,
 }
 
 static void
-gst_video_format_fixator_ensure_framerate (GstVideoFormatFixator * self,
-    GstBuffer * buffer)
-{
-  GstClockTime duration;
-  gboolean found_framerate = FALSE;
-  gint fps_n = 1;
-  gint fps_d = 1;
-
-  if (GST_VIDEO_INFO_FPS_N (&self->target_info) > 0 &&
-      GST_VIDEO_INFO_FPS_D (&self->target_info) > 0)
-    return;
-
-  GST_DEBUG_OBJECT (self, "Unknown frame rate, guessing");
-  duration = GST_BUFFER_DURATION (buffer);
-
-  if (!GST_CLOCK_TIME_IS_VALID (duration)) {
-    GST_WARNING_OBJECT (self, "Unknown buffer duration");
-  } else if (!gst_video_guess_framerate (duration, &fps_n, &fps_d)) {
-    GST_WARNING_OBJECT (self, "Failed to guess frame rate");
-  } else {
-    gdouble framerate = 0;
-
-    gst_util_fraction_to_double (fps_n, fps_d, &framerate);
-    if (framerate > 60) {
-      GST_WARNING_OBJECT (self, "Too large framerate %d/%d (%.1lf)",
-          fps_n, fps_d, framerate);
-      fps_n = 60;
-      fps_n = 1;
-    } else if (framerate < 24) {
-      GST_WARNING_OBJECT (self, "Too small framerate %d/%d (%.1lf)",
-          fps_n, fps_d, framerate);
-      fps_n = 24;
-      fps_n = 1;
-    }
-
-    found_framerate = TRUE;
-  }
-
-  if (!found_framerate) {
-    fps_n = 30;
-    fps_d = 1;
-  }
-
-  GST_VIDEO_INFO_FPS_N (&self->target_info) = fps_n;
-  GST_VIDEO_INFO_FPS_D (&self->target_info) = fps_d;
-}
-
-static void
 gst_video_format_fixator_fixate_target_format (GstVideoFormatFixator * self,
     GstBuffer * buffer)
 {
   GstVideoInfo *info = &self->target_info;
 
   gst_video_info_from_caps (info, self->initial_caps);
-  gst_video_format_fixator_ensure_framerate (self, buffer);
 
   if (GST_VIDEO_INFO_IS_INTERLACED (info)) {
     if (GST_VIDEO_INFO_FIELD_ORDER (info) == GST_VIDEO_FIELD_ORDER_UNKNOWN) {
@@ -514,7 +461,8 @@ gst_video_format_fixator_chain (GstPad * pad, GstObject * parent,
         "width", G_TYPE_INT, info->width,
         "height", G_TYPE_INT, info->height,
         "pixel-aspect-ratio", GST_TYPE_FRACTION, info->par_n, info->par_d,
-        "framerate", GST_TYPE_FRACTION, info->fps_n, info->fps_d, NULL);
+        NULL);
+
     color =
         gst_video_colorimetry_to_string (&GST_VIDEO_INFO_COLORIMETRY (info));
     if (color) {
