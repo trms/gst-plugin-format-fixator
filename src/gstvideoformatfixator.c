@@ -274,7 +274,7 @@ create_interlace_slot (GstVideoFormatFixator * self)
   /* FIXME: which interlace mode?? */
   tff = GST_VIDEO_INFO_FIELD_ORDER (target_info) ==
       GST_VIDEO_FIELD_ORDER_TOP_FIELD_FIRST;
-  g_object_set (interlace, "field-pattern", 1, "top-field-first", tff, NULL);
+  g_object_set (interlace, "field-pattern", 0, "top-field-first", tff, NULL);
 
   if (!gst_element_link_many (scale, capsfilter, interlace, NULL)) {
     GST_ERROR_OBJECT (self, "Failed to link elements");
