@@ -504,6 +504,7 @@ gst_video_format_fixator_chain (GstPad * pad, GstObject * parent,
   if (!self->got_buffer) {
     GstCaps *caps;
     GstVideoInfo *info = &self->target_info;
+    gchar *color;
 
     gst_video_format_fixator_fixate_target_format (self, buffer);
 
@@ -514,6 +515,12 @@ gst_video_format_fixator_chain (GstPad * pad, GstObject * parent,
         "height", G_TYPE_INT, info->height,
         "pixel-aspect-ratio", GST_TYPE_FRACTION, info->par_n, info->par_d,
         "framerate", GST_TYPE_FRACTION, info->fps_n, info->fps_d, NULL);
+    color =
+        gst_video_colorimetry_to_string (&GST_VIDEO_INFO_COLORIMETRY (info));
+    if (color) {
+      gst_caps_set_simple (caps, "colorimetry", G_TYPE_STRING, color, NULL);
+      g_free (color);
+    }
 
     if (GST_VIDEO_INFO_IS_INTERLACED (info)) {
       GValue mode_list = G_VALUE_INIT;
