@@ -44,8 +44,11 @@ enum
 {
   PROP_0,
   PROP_INITIAL_CAPS,
+  PROP_PASSTHROUGH,
   PROP_LAST,
 };
+
+#define DEFAULT_PASSTHROUGH FALSE
 
 static GParamSpec *properties[PROP_LAST];
 
@@ -86,11 +89,15 @@ struct _GstVideoFormatFixator
   GstCaps *initial_caps;
 
   GstVideoInfo target_info;
+
+  gboolean passthrough;
 };
 
 static void gst_video_format_fixator_dispose (GObject * object);
 static void gst_video_format_fixator_get_property (GObject * object, guint prop_id,
     GValue * value, GParamSpec * pspec);
+static void gst_video_format_fixator_set_property (GObject * object,
+    guint prop_id, const GValue * value, GParamSpec * pspec);
 
 static gboolean gst_video_format_fixator_sink_event (GstPad * pad,
     GstObject * parent, GstEvent * event);
@@ -110,11 +117,16 @@ gst_video_format_fixator_class_init (GstVideoFormatFixatorClass * klass)
 
   gobject_class->dispose = gst_video_format_fixator_dispose;
   gobject_class->get_property = gst_video_format_fixator_get_property;
+  gobject_class->set_property = gst_video_format_fixator_set_property;
 
   properties[PROP_INITIAL_CAPS] =
       g_param_spec_boxed ("initial-caps", "Initial Caps",
           "Initial caps", GST_TYPE_CAPS,
           G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
+  properties[PROP_PASSTHROUGH] =
+      g_param_spec_boolean ("passthrough", "Passthrough",
+          "Enable passthrough", DEFAULT_PASSTHROUGH,
+          G_PARAM_READWRITE | GST_PARAM_MUTABLE_READY | G_PARAM_STATIC_STRINGS);
 
   g_object_class_install_properties (gobject_class, PROP_LAST, properties);
 
@@ -180,6 +192,7 @@ gst_video_format_fixator_init (GstVideoFormatFixator * self)
   gst_pad_set_chain_function (self->sinkpad, gst_video_format_fixator_chain);
 
   self->initial_caps = gst_caps_new_any ();
+  self->passthrough = DEFAULT_PASSTHROUGH;
 
   return;
 
@@ -209,6 +222,25 @@ gst_video_format_fixator_get_property (GObject * object, guint prop_id,
       GST_OBJECT_LOCK (self);
       gst_value_set_caps (value, self->initial_caps);
       GST_OBJECT_UNLOCK (self);
+      break;
+    case PROP_PASSTHROUGH:
+      g_value_set_boolean (value, self->passthrough);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+      break;
+  }
+}
+
+static void
+gst_video_format_fixator_set_property (GObject * object, guint prop_id,
+    const GValue * value, GParamSpec * pspec)
+{
+  GstVideoFormatFixator *self = GST_VIDEO_FORMAT_FIXATOR (object);
+
+  switch (prop_id) {
+    case PROP_PASSTHROUGH:
+      self->passthrough = g_value_get_boolean (value);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -448,6 +480,9 @@ gst_video_format_fixator_chain (GstPad * pad, GstObject * parent,
 {
   GstVideoFormatFixator *self = GST_VIDEO_FORMAT_FIXATOR (parent);
 
+  if (self->passthrough)
+    return gst_proxy_pad_chain_default (pad, parent, buffer);
+
   if (!self->got_buffer) {
     GstCaps *caps;
     GstVideoInfo *info = &self->target_info;
@@ -606,6 +641,9 @@ gst_video_format_fixator_reconfigure (GstVideoFormatFixator * self,
   FixatorMode mode = MODE_PASSTHROUGH;
   FixatorMode current_mode = self->current_slot->mode;
   ProcSlot *new_slot;
+
+  if (self->passthrough)
+    return TRUE;
 
   if (!gst_video_info_from_caps (&info, caps)) {
     GST_ERROR_OBJECT (self, "Wrong caps %" GST_PTR_FORMAT, caps);
