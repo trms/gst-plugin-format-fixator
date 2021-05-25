@@ -99,12 +99,17 @@ static void gst_video_format_fixator_get_property (GObject * object, guint prop_
 static void gst_video_format_fixator_set_property (GObject * object,
     guint prop_id, const GValue * value, GParamSpec * pspec);
 
+static GstStateChangeReturn
+gst_video_format_fixator_change_state (GstElement * element,
+    GstStateChange transition);
+
 static gboolean gst_video_format_fixator_sink_event (GstPad * pad,
     GstObject * parent, GstEvent * event);
 static GstFlowReturn gst_video_format_fixator_chain (GstPad * pad,
     GstObject * parent, GstBuffer * buffer);
 static ProcSlot *gst_video_format_fixator_slot_new (GstVideoFormatFixator *
     self, FixatorMode mode);
+static void gst_video_format_fixator_reset (GstVideoFormatFixator * self);
 
 #define gst_video_format_fixator_parent_class parent_class
 G_DEFINE_TYPE (GstVideoFormatFixator, gst_video_format_fixator, GST_TYPE_BIN);
@@ -129,6 +134,9 @@ gst_video_format_fixator_class_init (GstVideoFormatFixatorClass * klass)
           G_PARAM_READWRITE | GST_PARAM_MUTABLE_READY | G_PARAM_STATIC_STRINGS);
 
   g_object_class_install_properties (gobject_class, PROP_LAST, properties);
+
+  element_class->change_state =
+      GST_DEBUG_FUNCPTR (gst_video_format_fixator_change_state);
 
   gst_element_class_add_static_pad_template (element_class, &sink_template);
   gst_element_class_add_static_pad_template (element_class, &src_template);
@@ -248,6 +256,34 @@ gst_video_format_fixator_set_property (GObject * object, guint prop_id,
   }
 }
 
+static GstStateChangeReturn
+gst_video_format_fixator_change_state (GstElement * element,
+    GstStateChange transition)
+{
+  GstVideoFormatFixator *self = GST_VIDEO_FORMAT_FIXATOR (element);
+  GstStateChangeReturn ret;
+
+  switch (transition) {
+    case GST_STATE_CHANGE_NULL_TO_READY:
+      gst_video_format_fixator_reset (self);
+      break;
+    default:
+      break;
+  }
+
+  ret = GST_ELEMENT_CLASS (parent_class)->change_state (element, transition);
+
+  switch (transition) {
+    case GST_STATE_CHANGE_PAUSED_TO_READY:
+      gst_video_format_fixator_reset (self);
+      break;
+    default:
+      break;
+  }
+
+  return ret;
+}
+
 static ProcSlot *
 create_passthrough_slot (GstVideoFormatFixator * self)
 {
@@ -358,6 +394,8 @@ create_scale_interlace_slot (GstVideoFormatFixator * self)
       target_info->width, "height", G_TYPE_INT, target_info->height,
       "pixel-aspect-ratio", GST_TYPE_FRACTION, target_info->par_n,
       target_info->par_d, "interlace-mode", G_TYPE_STRING, "progressive", NULL);
+  GST_INFO_OBJECT (self, "Setting restirct caps %" GST_PTR_FORMAT, caps);
+
   g_object_set (capsfilter, "caps", caps, NULL);
   gst_caps_unref (caps);
 
@@ -367,6 +405,8 @@ create_scale_interlace_slot (GstVideoFormatFixator * self)
   /* FIXME: which interlace mode?? */
   tff = GST_VIDEO_INFO_FIELD_ORDER (target_info) ==
       GST_VIDEO_FIELD_ORDER_TOP_FIELD_FIRST;
+  GST_INFO_OBJECT (self, "TFF %d", tff);
+
   g_object_set (interlace, "field-pattern", 0, "top-field-first", tff, NULL);
 
   if (!gst_element_link_many (deinterlace, convert, scale, capsfilter,
@@ -559,7 +599,7 @@ eos_drop_probe (GstPad * pad, GstPadProbeInfo * info,
 
 static gboolean
 gst_video_format_fixator_switch_slot (GstVideoFormatFixator * self,
-    ProcSlot * new_slot, GstCaps * in_caps)
+    ProcSlot * new_slot, gboolean reset)
 {
   guint block_id = 0;
   GstPad *srcpad = NULL;
@@ -568,18 +608,20 @@ gst_video_format_fixator_switch_slot (GstVideoFormatFixator * self,
   GstPadLinkReturn link_ret;
 
   /* do block while switching slot */
-  block_id = gst_pad_add_probe (self->srcpad, GST_PAD_PROBE_TYPE_BLOCK_UPSTREAM,
-      NULL, NULL, NULL);
+  if (!reset) {
+    block_id = gst_pad_add_probe (self->srcpad, GST_PAD_PROBE_TYPE_BLOCK_UPSTREAM,
+        NULL, NULL, NULL);
 
-  /* And add probe to drop EOS event */
-  gst_pad_add_probe (self->current_slot->srcpad,
-      GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, (GstPadProbeCallback) eos_drop_probe,
-      self, NULL);
+    /* And add probe to drop EOS event */
+    gst_pad_add_probe (self->current_slot->srcpad,
+        GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, (GstPadProbeCallback) eos_drop_probe,
+        self, NULL);
 
-  /* Send EOS event to drain */
-  gst_pad_send_event (self->current_slot->sinkpad, gst_event_new_eos ());
+    /* Send EOS event to drain */
+    gst_pad_send_event (self->current_slot->sinkpad, gst_event_new_eos ());
 
-  gst_element_set_locked_state (current_slot->bin, TRUE);
+    gst_element_set_locked_state (current_slot->bin, TRUE);
+  }
 
   /* Unlink current slot */
   srcpad = gst_element_get_static_pad (self->convert_front, "src");
@@ -619,7 +661,10 @@ gst_video_format_fixator_switch_slot (GstVideoFormatFixator * self,
     goto error;
   }
 
-  gst_pad_remove_probe (self->srcpad, block_id);
+  if (!reset) {
+    gst_pad_remove_probe (self->srcpad, block_id);
+  }
+
   gst_element_sync_state_with_parent (new_slot->bin);
 
   gst_object_unref (srcpad);
@@ -677,14 +722,33 @@ gst_video_format_fixator_reconfigure (GstVideoFormatFixator * self,
     }
   }
 
-  if (current_mode == mode)
+  if (current_mode == mode) {
+    GST_INFO_OBJECT (self, "Same mode %d", mode);
     return TRUE;
+  }
 
   GST_DEBUG_OBJECT (self, "Mode change %d -> %d", current_mode, mode);
 
   new_slot = gst_video_format_fixator_slot_new (self, mode);
 
-  return gst_video_format_fixator_switch_slot (self, new_slot, caps);
+  return gst_video_format_fixator_switch_slot (self, new_slot, FALSE);
+}
+
+static void
+gst_video_format_fixator_reset (GstVideoFormatFixator * self)
+{
+  ProcSlot *new_slot;
+  GstCaps *caps = gst_caps_new_any ();
+
+  GST_DEBUG_OBJECT (self, "Reset");
+
+  new_slot = gst_video_format_fixator_slot_new (self, MODE_PASSTHROUGH);
+  gst_video_format_fixator_switch_slot (self, new_slot, TRUE);
+
+  gst_clear_caps (&self->initial_caps);
+  g_object_set (self->capsfilter_rear, "caps", caps, NULL);
+  self->initial_caps = caps;
+  self->got_buffer = FALSE;
 }
 
 static gboolean
