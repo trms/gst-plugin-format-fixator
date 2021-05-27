@@ -45,6 +45,7 @@ enum
   PROP_0,
   PROP_INITIAL_CAPS,
   PROP_PASSTHROUGH,
+  PROP_RESTRICT_CAPS,
   PROP_LAST,
 };
 
@@ -87,6 +88,7 @@ struct _GstVideoFormatFixator
 
   gboolean got_buffer;
   GstCaps *initial_caps;
+  GstCaps *restrict_caps;
 
   GstVideoInfo target_info;
 
@@ -131,6 +133,10 @@ gst_video_format_fixator_class_init (GstVideoFormatFixatorClass * klass)
   properties[PROP_PASSTHROUGH] =
       g_param_spec_boolean ("passthrough", "Passthrough",
           "Enable passthrough", DEFAULT_PASSTHROUGH,
+          G_PARAM_READWRITE | GST_PARAM_MUTABLE_READY | G_PARAM_STATIC_STRINGS);
+  properties[PROP_RESTRICT_CAPS] =
+      g_param_spec_boxed ("restrict-caps", "Restrict Caps",
+          "Restrict caps", GST_TYPE_CAPS,
           G_PARAM_READWRITE | GST_PARAM_MUTABLE_READY | G_PARAM_STATIC_STRINGS);
 
   g_object_class_install_properties (gobject_class, PROP_LAST, properties);
@@ -200,6 +206,7 @@ gst_video_format_fixator_init (GstVideoFormatFixator * self)
   gst_pad_set_chain_function (self->sinkpad, gst_video_format_fixator_chain);
 
   self->initial_caps = gst_caps_new_any ();
+  self->restrict_caps = gst_caps_new_any ();
   self->passthrough = DEFAULT_PASSTHROUGH;
 
   return;
@@ -214,6 +221,7 @@ gst_video_format_fixator_dispose (GObject * object)
   GstVideoFormatFixator *self = GST_VIDEO_FORMAT_FIXATOR (object);
 
   gst_clear_caps (&self->initial_caps);
+  gst_clear_caps (&self->restrict_caps);
   g_clear_pointer (&self->current_slot, g_free);
 
   G_OBJECT_CLASS (parent_class)->dispose (object);
@@ -234,6 +242,11 @@ gst_video_format_fixator_get_property (GObject * object, guint prop_id,
     case PROP_PASSTHROUGH:
       g_value_set_boolean (value, self->passthrough);
       break;
+    case PROP_RESTRICT_CAPS:
+      GST_OBJECT_LOCK (self);
+      gst_value_set_caps (value, self->restrict_caps);
+      GST_OBJECT_UNLOCK (self);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -250,6 +263,22 @@ gst_video_format_fixator_set_property (GObject * object, guint prop_id,
     case PROP_PASSTHROUGH:
       self->passthrough = g_value_get_boolean (value);
       break;
+    case PROP_RESTRICT_CAPS:
+      {
+        GstCaps *new_caps;
+        const GstCaps *new_caps_val = gst_value_get_caps (value);
+
+        if (new_caps_val == NULL) {
+          new_caps = gst_caps_new_any ();
+        } else {
+          new_caps = (GstCaps *) new_caps_val;
+          gst_caps_ref (new_caps);
+        }
+
+        gst_clear_caps (&self->restrict_caps);
+        self->restrict_caps = new_caps;
+        break;
+      }
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -332,8 +361,12 @@ create_interlace_slot (GstVideoFormatFixator * self)
   MAKE_ELEMENT_AND_ADD (slot->bin, capsfilter, "capsfilter");
   MAKE_ELEMENT_AND_ADD (slot->bin, interlace, "interlace");
 
-  caps = gst_caps_new_simple ("video/x-raw", "width", G_TYPE_INT,
-      target_info->width, "height", G_TYPE_INT, target_info->height,
+  caps = gst_caps_new_simple ("video/x-raw",
+      /* XXX: assuming restrict caps is supported by interlace */
+      "format", G_TYPE_STRING,
+      gst_video_format_to_string (GST_VIDEO_INFO_FORMAT (target_info)),
+      "width", G_TYPE_INT, target_info->width,
+      "height", G_TYPE_INT, target_info->height,
       "pixel-aspect-ratio", GST_TYPE_FRACTION, target_info->par_n,
       target_info->par_d, NULL);
   g_object_set (capsfilter, "caps", caps, NULL);
@@ -390,11 +423,15 @@ create_scale_interlace_slot (GstVideoFormatFixator * self)
   MAKE_ELEMENT_AND_ADD (slot->bin, capsfilter, "capsfilter");
   MAKE_ELEMENT_AND_ADD (slot->bin, interlace, "interlace");
 
-  caps = gst_caps_new_simple ("video/x-raw", "width", G_TYPE_INT,
-      target_info->width, "height", G_TYPE_INT, target_info->height,
+  caps = gst_caps_new_simple ("video/x-raw",
+      /* XXX: assuming restrict caps is supported by interlace */
+      "format", G_TYPE_STRING,
+      gst_video_format_to_string (GST_VIDEO_INFO_FORMAT (target_info)),
+      "width", G_TYPE_INT, target_info->width,
+      "height", G_TYPE_INT, target_info->height,
       "pixel-aspect-ratio", GST_TYPE_FRACTION, target_info->par_n,
       target_info->par_d, "interlace-mode", G_TYPE_STRING, "progressive", NULL);
-  GST_INFO_OBJECT (self, "Setting restirct caps %" GST_PTR_FORMAT, caps);
+  GST_INFO_OBJECT (self, "Setting restrict caps %" GST_PTR_FORMAT, caps);
 
   g_object_set (capsfilter, "caps", caps, NULL);
   gst_caps_unref (caps);
@@ -498,8 +535,44 @@ gst_video_format_fixator_fixate_target_format (GstVideoFormatFixator * self,
     GstBuffer * buffer)
 {
   GstVideoInfo *info = &self->target_info;
+  GstCaps *target_caps;
 
-  gst_video_info_from_caps (info, self->initial_caps);
+  GST_OBJECT_LOCK (self);
+  if (self->restrict_caps && !gst_caps_is_any (self->restrict_caps)) {
+    GstCaps *tmp;
+    GstStructure *s;
+    const GValue *format_val;
+
+    GST_INFO_OBJECT (self, "Have restrict caps %" GST_PTR_FORMAT,
+        self->restrict_caps);
+
+    tmp = gst_caps_copy (self->initial_caps);
+
+    s = gst_caps_get_structure (self->restrict_caps, 0);
+    /* XXX: use only requested format at the moment */
+    format_val = gst_structure_get_value (s, "format");
+    if (format_val)
+      gst_caps_set_value (tmp, "format", format_val);
+
+    /* If not subset, use requested format */
+    if (!gst_caps_is_subset (self->initial_caps, tmp)) {
+      GST_INFO_OBJECT (self,
+          "Initial caps is not subset of requested format caps");
+      target_caps = tmp;
+      target_caps = gst_caps_fixate (target_caps);
+    } else {
+      /* Initial caps is subset of requested format caps, we can use
+       * out initial caps */
+      gst_caps_unref (tmp);
+      target_caps = gst_caps_copy (self->initial_caps);
+    }
+  } else {
+    target_caps = gst_caps_copy (self->initial_caps);
+  }
+  GST_OBJECT_UNLOCK (self);
+
+  gst_video_info_from_caps (info, target_caps);
+  gst_caps_unref (target_caps);
 
   if (GST_VIDEO_INFO_IS_INTERLACED (info)) {
     if (GST_VIDEO_INFO_FIELD_ORDER (info) == GST_VIDEO_FIELD_ORDER_UNKNOWN) {
@@ -742,13 +815,14 @@ gst_video_format_fixator_reset (GstVideoFormatFixator * self)
 
   GST_DEBUG_OBJECT (self, "Reset");
 
-  new_slot = gst_video_format_fixator_slot_new (self, MODE_PASSTHROUGH);
-  gst_video_format_fixator_switch_slot (self, new_slot, TRUE);
-
   gst_clear_caps (&self->initial_caps);
-  g_object_set (self->capsfilter_rear, "caps", caps, NULL);
   self->initial_caps = caps;
   self->got_buffer = FALSE;
+
+  g_object_set (self->capsfilter_rear, "caps", caps, NULL);
+
+  new_slot = gst_video_format_fixator_slot_new (self, MODE_PASSTHROUGH);
+  gst_video_format_fixator_switch_slot (self, new_slot, TRUE);
 }
 
 static gboolean
