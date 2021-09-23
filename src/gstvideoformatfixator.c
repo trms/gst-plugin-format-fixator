@@ -112,6 +112,8 @@ static GstFlowReturn gst_video_format_fixator_chain (GstPad * pad,
 static ProcSlot *gst_video_format_fixator_slot_new (GstVideoFormatFixator *
     self, FixatorMode mode);
 static void gst_video_format_fixator_reset (GstVideoFormatFixator * self);
+static gboolean gst_video_format_fixator_query (GstPad * pad,
+    GstObject * parent, GstQuery * query);
 
 #define gst_video_format_fixator_parent_class parent_class
 G_DEFINE_TYPE (GstVideoFormatFixator, gst_video_format_fixator, GST_TYPE_BIN);
@@ -203,6 +205,9 @@ gst_video_format_fixator_init (GstVideoFormatFixator * self)
   gst_pad_set_event_function (self->sinkpad,
       gst_video_format_fixator_sink_event);
   gst_pad_set_chain_function (self->sinkpad, gst_video_format_fixator_chain);
+  gst_pad_set_query_function (self->sinkpad, gst_video_format_fixator_query);
+
+  gst_pad_set_query_function (self->srcpad, gst_video_format_fixator_query);
 
   self->initial_caps = gst_caps_new_any ();
   self->restrict_caps = gst_caps_new_any ();
@@ -861,4 +866,52 @@ gst_video_format_fixator_sink_event (GstPad * pad, GstObject * parent,
   }
 
   return gst_pad_event_default (pad, parent, event);
+}
+
+static gboolean
+gst_video_format_fixator_query (GstPad * pad, GstObject * parent,
+    GstQuery * query)
+{
+  switch (GST_QUERY_TYPE (query)) {
+    case GST_QUERY_ACCEPT_CAPS:
+    {
+      GstCaps *caps, *templ_caps;
+      gboolean can_intersect;
+
+      gst_query_parse_accept_caps (query, &caps);
+      templ_caps = gst_pad_get_pad_template_caps (pad);
+
+      can_intersect = gst_caps_can_intersect (caps, templ_caps);
+      gst_caps_unref (templ_caps);
+
+      gst_query_set_accept_caps_result (query, can_intersect);
+
+      return TRUE;
+    }
+    case GST_QUERY_CAPS:
+    {
+      GstCaps *filter, *caps, *templ_caps;
+
+      gst_query_parse_caps (query, &filter);
+
+      templ_caps = gst_pad_get_pad_template_caps (pad);
+
+      if (filter) {
+        caps = gst_caps_intersect_full (filter,
+            templ_caps, GST_CAPS_INTERSECT_FIRST);
+        gst_caps_unref (templ_caps);
+      } else {
+        caps = templ_caps;
+      }
+
+      gst_query_set_caps_result (query, caps);
+      gst_caps_unref (caps);
+
+      return TRUE;
+    }
+    default:
+      break;
+  }
+
+  return gst_pad_query_default (pad, parent, query);
 }
