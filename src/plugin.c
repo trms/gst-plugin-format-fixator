@@ -37,4 +37,5 @@ GST_PLUGIN_DEFINE (GST_VERSION_MAJOR,
     GST_VERSION_MINOR,
     formatfixator,
     "Format Fixator plugin",
-    plugin_init, VERSION, "LGPL", "gst-plugin-format-fixator", "http://centricular.com")
+    plugin_init, VERSION, "LGPL", "gst-plugin-format-fixator",
+    "http://centricular.com")

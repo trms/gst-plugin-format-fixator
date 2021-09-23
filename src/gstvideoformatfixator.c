@@ -96,8 +96,8 @@ struct _GstVideoFormatFixator
 };
 
 static void gst_video_format_fixator_dispose (GObject * object);
-static void gst_video_format_fixator_get_property (GObject * object, guint prop_id,
-    GValue * value, GParamSpec * pspec);
+static void gst_video_format_fixator_get_property (GObject * object,
+    guint prop_id, GValue * value, GParamSpec * pspec);
 static void gst_video_format_fixator_set_property (GObject * object,
     guint prop_id, const GValue * value, GParamSpec * pspec);
 
@@ -128,16 +128,15 @@ gst_video_format_fixator_class_init (GstVideoFormatFixatorClass * klass)
 
   properties[PROP_INITIAL_CAPS] =
       g_param_spec_boxed ("initial-caps", "Initial Caps",
-          "Initial caps", GST_TYPE_CAPS,
-          G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
+      "Initial caps", GST_TYPE_CAPS, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
   properties[PROP_PASSTHROUGH] =
       g_param_spec_boolean ("passthrough", "Passthrough",
-          "Enable passthrough", DEFAULT_PASSTHROUGH,
-          G_PARAM_READWRITE | GST_PARAM_MUTABLE_READY | G_PARAM_STATIC_STRINGS);
+      "Enable passthrough", DEFAULT_PASSTHROUGH,
+      G_PARAM_READWRITE | GST_PARAM_MUTABLE_READY | G_PARAM_STATIC_STRINGS);
   properties[PROP_RESTRICT_CAPS] =
       g_param_spec_boxed ("restrict-caps", "Restrict Caps",
-          "Restrict caps", GST_TYPE_CAPS,
-          G_PARAM_READWRITE | GST_PARAM_MUTABLE_READY | G_PARAM_STATIC_STRINGS);
+      "Restrict caps", GST_TYPE_CAPS,
+      G_PARAM_READWRITE | GST_PARAM_MUTABLE_READY | G_PARAM_STATIC_STRINGS);
 
   g_object_class_install_properties (gobject_class, PROP_LAST, properties);
 
@@ -264,21 +263,21 @@ gst_video_format_fixator_set_property (GObject * object, guint prop_id,
       self->passthrough = g_value_get_boolean (value);
       break;
     case PROP_RESTRICT_CAPS:
-      {
-        GstCaps *new_caps;
-        const GstCaps *new_caps_val = gst_value_get_caps (value);
+    {
+      GstCaps *new_caps;
+      const GstCaps *new_caps_val = gst_value_get_caps (value);
 
-        if (new_caps_val == NULL) {
-          new_caps = gst_caps_new_any ();
-        } else {
-          new_caps = (GstCaps *) new_caps_val;
-          gst_caps_ref (new_caps);
-        }
-
-        gst_clear_caps (&self->restrict_caps);
-        self->restrict_caps = new_caps;
-        break;
+      if (new_caps_val == NULL) {
+        new_caps = gst_caps_new_any ();
+      } else {
+        new_caps = (GstCaps *) new_caps_val;
+        gst_caps_ref (new_caps);
       }
+
+      gst_clear_caps (&self->restrict_caps);
+      self->restrict_caps = new_caps;
+      break;
+    }
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -682,13 +681,14 @@ gst_video_format_fixator_switch_slot (GstVideoFormatFixator * self,
 
   /* do block while switching slot */
   if (!reset) {
-    block_id = gst_pad_add_probe (self->srcpad, GST_PAD_PROBE_TYPE_BLOCK_UPSTREAM,
+    block_id =
+        gst_pad_add_probe (self->srcpad, GST_PAD_PROBE_TYPE_BLOCK_UPSTREAM,
         NULL, NULL, NULL);
 
     /* And add probe to drop EOS event */
     gst_pad_add_probe (self->current_slot->srcpad,
-        GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, (GstPadProbeCallback) eos_drop_probe,
-        self, NULL);
+        GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+        (GstPadProbeCallback) eos_drop_probe, self, NULL);
 
     /* Send EOS event to drain */
     gst_pad_send_event (self->current_slot->sinkpad, gst_event_new_eos ());
