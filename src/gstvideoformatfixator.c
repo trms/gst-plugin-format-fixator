@@ -723,18 +723,24 @@ gst_video_format_fixator_switch_slot (GstVideoFormatFixator * self,
 
   self->current_slot = new_slot;
 
-  /* And link new slot */
+  /* And link new slot. Skip the caps check: the link-time caps query
+   * reaches the live upstream, which may already be advertising a newer
+   * format than the caps event being handled here (e.g. 1080i -> 720p ->
+   * 1080i back to back). The caps event that follows does the actual
+   * negotiation. */
   gst_bin_add (GST_BIN_CAST (self), new_slot->bin);
-  if ((link_ret = gst_pad_link (srcpad, new_slot->sinkpad)) != GST_PAD_LINK_OK) {
+  if ((link_ret = gst_pad_link_full (srcpad, new_slot->sinkpad,
+              GST_PAD_LINK_CHECK_HIERARCHY)) != GST_PAD_LINK_OK) {
     GST_ERROR_OBJECT (self, "Failed to link pads %" GST_PTR_FORMAT " and %"
         GST_PTR_FORMAT ", error %s", srcpad, new_slot->sinkpad,
         gst_pad_link_get_name (link_ret));
     goto error;
   }
 
-  if ((link_ret = gst_pad_link (new_slot->srcpad, sinkpad)) != GST_PAD_LINK_OK) {
+  if ((link_ret = gst_pad_link_full (new_slot->srcpad, sinkpad,
+              GST_PAD_LINK_CHECK_HIERARCHY)) != GST_PAD_LINK_OK) {
     GST_ERROR_OBJECT (self, "Failed to link pads %" GST_PTR_FORMAT " and %"
-        GST_PTR_FORMAT ", error %s", srcpad, new_slot->sinkpad,
+        GST_PTR_FORMAT ", error %s", new_slot->srcpad, sinkpad,
         gst_pad_link_get_name (link_ret));
     goto error;
   }
@@ -751,6 +757,13 @@ gst_video_format_fixator_switch_slot (GstVideoFormatFixator * self,
   return TRUE;
 
 error:
+  /* Don't leave the upstream block probe behind, it would stall upstream
+   * events (and anything waiting on them) forever */
+  if (block_id)
+    gst_pad_remove_probe (self->srcpad, block_id);
+  gst_clear_object (&srcpad);
+  gst_clear_object (&sinkpad);
+
   return FALSE;
 }
 
